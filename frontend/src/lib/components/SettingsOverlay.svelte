@@ -1,8 +1,9 @@
 <script lang="ts">
-  import { RefreshCcw, Settings2, Sparkles, X } from 'lucide-svelte';
+  import { Activity, Download, RefreshCcw, Settings2, Sparkles, X } from 'lucide-svelte';
   import type {
     EmbeddingProvider,
     KnowledgeSettings,
+    OllamaHealth,
     ModelSettings,
     OllamaModel,
     ProviderOption,
@@ -17,11 +18,21 @@
   export let ollamaModels: OllamaModel[] = [];
   export let loadingOllamaModels = false;
   export let ollamaModelsError: string | null = null;
+  export let checkingOllamaHealth = false;
+  export let ollamaHealth: OllamaHealth | null = null;
+  export let ollamaHealthError: string | null = null;
+  export let pullingOllamaModel = false;
+  export let ollamaPullStatus = '';
+  export let ollamaPullProgress: number | null = null;
+  export let ollamaPullError: string | null = null;
+  export let ollamaPullDone = false;
   export let onClose: () => void;
   export let onSaveModel: (value: UpdateModelSettings) => Promise<void>;
   export let onSaveKnowledge: (value: KnowledgeSettings) => Promise<void>;
   export let onSaveSystem: (value: SystemSettings) => Promise<void>;
   export let onRefreshOllamaModels: (purpose: 'generation' | 'embedding', baseUrl?: string | null) => Promise<void>;
+  export let onCheckOllamaHealth: (purpose: 'generation' | 'embedding', baseUrl?: string | null) => Promise<void>;
+  export let onPullOllamaModel: (model: string, purpose: 'generation' | 'embedding', baseUrl?: string | null) => Promise<void>;
 
   let activeTab: 'Model' | 'Knowledge' | 'System' = 'Model';
   let savingModel = false;
@@ -35,6 +46,7 @@
   let systemError = '';
   let generationApiKey = '';
   let embeddingApiKey = '';
+  let pullModel = '';
   let draftModel = createModelDraft(modelSettings);
   let draftKnowledge = { ...knowledgeSettings };
   let draftSystem = { ...systemSettings };
@@ -68,6 +80,7 @@
     draftSystem = { ...systemSettings };
     generationApiKey = '';
     embeddingApiKey = '';
+    pullModel = '';
     modelSuccess = '';
     knowledgeSuccess = '';
     systemSuccess = '';
@@ -99,6 +112,9 @@
       : draftModel.generation.provider === 'openai'
         ? draftModel.generation.base_url || 'https://api.openai.com/v1'
         : null;
+    if (draftModel.generation.provider === 'ollama') {
+      void onRefreshOllamaModels('generation', draftModel.generation.base_url);
+    }
   }
 
   function handleEmbeddingProviderChange() {
@@ -112,6 +128,9 @@
         : draftModel.embedding.provider === 'openai'
           ? draftModel.embedding.base_url || 'https://api.openai.com/v1'
           : null;
+    if (draftModel.embedding.provider === 'ollama') {
+      void onRefreshOllamaModels('embedding', draftModel.embedding.base_url);
+    }
   }
 
   async function saveModelSettings() {
@@ -189,7 +208,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-50" role="dialog" aria-modal="true" tabindex="-1" on:click|self={onClose}>
     <div class="absolute inset-0 bg-[var(--bg-overlay)]"></div>
-    <div class="absolute inset-x-6 top-6 mx-auto max-w-[920px] rounded-[var(--radius-2xl)] border border-[var(--border-default)] bg-[var(--bg-panel)] p-6 shadow-[var(--shadow-lg)]">
+    <div class="absolute inset-x-6 top-6 mx-auto max-w-[1120px] rounded-[var(--radius-2xl)] border border-[var(--border-default)] bg-[var(--bg-panel)] p-6 shadow-[var(--shadow-lg)]">
       <div class="flex items-start justify-between gap-4 border-b border-black/[0.06] pb-5">
         <div class="flex items-center gap-3">
           <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-black/[0.04]">
@@ -227,12 +246,12 @@
         {/each}
       </div>
 
-      <div class="mt-6 max-h-[70vh] overflow-y-auto pr-1 custom-scrollbar">
+      <div class="mt-6 max-h-[72vh] overflow-y-auto pr-1 custom-scrollbar">
         {#if activeTab === 'Model'}
           <div class="space-y-10">
             <div>
               <p class="mb-4 text-[11px] uppercase tracking-wide text-black/30">Generation model</p>
-              <div class="max-w-[540px] space-y-4">
+              <div class="max-w-md space-y-4">
                 <div>
                   <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Provider</label>
                   <div class="relative">
@@ -253,7 +272,7 @@
 
                 <div>
                   <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Model</label>
-                  {#if draftModel.generation.provider === 'ollama' && ollamaModels.length > 0}
+                  {#if draftModel.generation.provider === 'ollama'}
                     <div class="flex items-center gap-2">
                       <div class="relative flex-1">
                         <select
@@ -261,9 +280,15 @@
                           disabled={loadingOllamaModels}
                           class="w-full appearance-none rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 pr-8 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20 disabled:opacity-50"
                         >
-                          {#each ollamaModels as model (model.name)}
-                            <option value={model.name}>{model.name}{model.size ? ` (${formatBytes(model.size)})` : ''}</option>
-                          {/each}
+                          {#if loadingOllamaModels}
+                            <option value="">Loading…</option>
+                          {:else if ollamaModels.length === 0}
+                            <option value="">No models pulled yet</option>
+                          {:else}
+                            {#each ollamaModels as model (model.name)}
+                              <option value={model.name}>{model.name}{model.size ? ` (${formatBytes(model.size)})` : ''}</option>
+                            {/each}
+                          {/if}
                         </select>
                         <svg class="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-black/35" viewBox="0 0 16 16" fill="currentColor">
                           <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"/>
@@ -271,7 +296,16 @@
                       </div>
                       <button
                         type="button"
-                        class="flex h-9 w-9 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] transition-colors hover:bg-black/[0.04] disabled:opacity-40"
+                        class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] transition-colors hover:bg-black/[0.04] disabled:opacity-40"
+                        disabled={checkingOllamaHealth}
+                        title="Check Ollama availability"
+                        on:click={() => void onCheckOllamaHealth('generation', ollamaBaseUrl('generation'))}
+                      >
+                        <Activity class={`h-3.5 w-3.5 text-black/45 ${checkingOllamaHealth ? 'animate-pulse' : ''}`} strokeWidth={1.8} />
+                      </button>
+                      <button
+                        type="button"
+                        class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] transition-colors hover:bg-black/[0.04] disabled:opacity-40"
                         disabled={loadingOllamaModels}
                         title="Refresh models"
                         on:click={() => onRefreshOllamaModels('generation', ollamaBaseUrl('generation'))}
@@ -279,16 +313,38 @@
                         <RefreshCcw class={`h-3.5 w-3.5 text-black/45 ${loadingOllamaModels ? 'animate-spin' : ''}`} strokeWidth={1.8} />
                       </button>
                     </div>
+                    <div class="mt-2 flex items-center gap-2">
+                      <input
+                        bind:value={pullModel}
+                        class="flex-1 rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
+                        placeholder="Pull model…"
+                      />
+                      <button
+                        type="button"
+                        class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] transition-colors hover:bg-black/[0.04] disabled:opacity-40"
+                        disabled={pullingOllamaModel || !pullModel.trim()}
+                        title="Pull model"
+                        on:click={async () => {
+                          await onPullOllamaModel(pullModel, 'generation', ollamaBaseUrl('generation'));
+                          if (!ollamaPullError) pullModel = '';
+                        }}
+                      >
+                        <Download class={`h-3.5 w-3.5 text-black/45 ${pullingOllamaModel ? 'animate-bounce' : ''}`} strokeWidth={1.8} />
+                      </button>
+                    </div>
+                    <p class="mt-1 text-[11px] text-black/35">
+                      {optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.hint}
+                    </p>
                   {:else}
                     <input
                       bind:value={draftModel.generation.model}
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
                       placeholder={optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.default_model}
                     />
+                    <p class="mt-1 text-[11px] text-black/35">
+                      {optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.hint}
+                    </p>
                   {/if}
-                  <p class="mt-1 text-[11px] text-black/35">
-                    {optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.hint}
-                  </p>
                 </div>
 
                 {#if draftModel.generation.provider === 'ollama'}
@@ -393,19 +449,44 @@
                   </div>
                 </div>
 
-                <div class="flex items-center gap-2 rounded-[var(--radius-sm)] bg-black/[0.03] px-3 py-2.5">
-                  <span class="h-1.5 w-1.5 rounded-full bg-green-500"></span>
-                  <p class="text-[11.5px] text-black/50">
-                    Active: <span class="font-medium text-black/65">{modelSettings.generation.provider} / {modelSettings.generation.model}</span>
+                {#if ollamaHealth}
+                  <p class="text-[11px] text-black/40">
+                    Ollama reachable. <span class="font-medium text-black/60">{ollamaHealth.model_count}</span> models available.
                   </p>
-                </div>
+                {/if}
+                {#if ollamaHealthError}
+                  <p class="text-[12px] text-[var(--status-error)]">{ollamaHealthError}</p>
+                {/if}
+                {#if pullingOllamaModel || ollamaPullDone || ollamaPullProgress !== null}
+                  <div class="rounded-[var(--radius-sm)] bg-black/[0.03] px-3 py-2.5">
+                    <div class="flex items-center justify-between gap-3">
+                      <p class="truncate text-[11px] text-black/50">{ollamaPullStatus || 'Starting…'}</p>
+                      {#if ollamaPullDone}
+                        <span class="text-[11px] text-green-600" style="font-weight: 500;">Done</span>
+                      {:else if ollamaPullProgress !== null}
+                        <span class="text-[11px] text-black/40">{ollamaPullProgress}%</span>
+                      {/if}
+                    </div>
+                    {#if ollamaPullProgress !== null}
+                      <div class="mt-2 h-1 w-full overflow-hidden rounded-full bg-black/[0.08]">
+                        <div
+                          class={`h-full rounded-full transition-all duration-300 ${ollamaPullDone ? 'bg-green-500' : 'bg-[var(--accent-primary)]'}`}
+                          style={`width: ${Math.max(4, ollamaPullProgress)}%`}
+                        ></div>
+                      </div>
+                    {/if}
+                  </div>
+                {/if}
+                {#if ollamaPullError}
+                  <p class="text-[12px] text-[var(--status-error)]">{ollamaPullError}</p>
+                {/if}
               </div>
             </div>
 
             <div class="border-t border-[var(--border-default)] pt-8">
               <p class="mb-1 text-[11px] uppercase tracking-wide text-black/30">Embedding model</p>
               <p class="mb-4 text-[12px] text-black/40">Used to encode documents and queries for RAG retrieval.</p>
-              <div class="max-w-[540px] space-y-4">
+              <div class="max-w-md space-y-4">
                 <div>
                   <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Provider</label>
                   <div class="relative">

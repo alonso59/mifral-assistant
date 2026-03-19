@@ -11,7 +11,7 @@ from fastapi import HTTPException, UploadFile
 from psycopg2.extras import Json, RealDictCursor
 
 from app.embedding import build_embedding_provider
-from app.generation import build_generation_provider, list_ollama_models
+from app.generation import build_generation_provider, check_ollama_health, list_ollama_models, pull_ollama_model
 from app.models import (
     EMBEDDING_PROVIDER_OPTIONS,
     GENERATION_PROVIDER_OPTIONS,
@@ -19,6 +19,7 @@ from app.models import (
     ChatMessage,
     Citation,
     EmbeddingSettings,
+    FeedbackVote,
     GenerationSettings,
     KnowledgeDocument,
     KnowledgeSettings,
@@ -244,6 +245,7 @@ class MemoryAssistantStore:
             content=content,
             grounded=False,
             citations=[],
+            feedback_vote=None,
             created_at=utc_iso(),
         )
         self.messages.setdefault(chat_id, []).append(message)
@@ -267,6 +269,7 @@ class MemoryAssistantStore:
             content=reply,
             grounded=grounded,
             citations=citations,
+            feedback_vote=None,
             created_at=utc_iso(),
         )
         chat.updated_at = utc_iso()
@@ -279,6 +282,19 @@ class MemoryAssistantStore:
         if last_user is None:
             raise HTTPException(status_code=400, detail="No user message to regenerate from.")
         return self.append_assistant_message(session_id, chat_id, last_user.content)
+
+    def set_message_feedback(self, session_id: str, message_id: str, vote: Optional[FeedbackVote]) -> ChatMessage:
+        for chat in self.chats.get(session_id, []):
+            chat_messages = self.messages.get(chat.id, [])
+            for index, message in enumerate(chat_messages):
+                if message.id != message_id:
+                    continue
+                if message.role != "ASSISTANT":
+                    raise HTTPException(status_code=400, detail="Only assistant messages can be rated.")
+                updated = message.model_copy(update={"feedback_vote": vote})
+                chat_messages[index] = updated
+                return updated
+        raise HTTPException(status_code=404, detail="Message not found.")
 
     def get_model_settings(self) -> ModelSettings:
         return self.model_settings
@@ -314,6 +330,16 @@ class MemoryAssistantStore:
         for item in default_models:
             unique[item["name"]] = item
         return list(unique.values())
+
+    def get_ollama_health(self, base_url: Optional[str] = None) -> dict[str, Any]:
+        models = self.get_ollama_models(base_url)
+        return {"ok": True, "model_count": len(models)}
+
+    def pull_ollama_model(self, model: str, base_url: Optional[str] = None):
+        target = model.strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="Model is required.")
+        yield json.dumps({"status": "success", "completed": 1, "total": 1, "model": target})
 
 
 class PostgresAssistantStore:
@@ -419,6 +445,7 @@ class PostgresAssistantStore:
                   content TEXT NOT NULL,
                   grounded BOOLEAN NOT NULL DEFAULT FALSE,
                   citations JSONB NOT NULL DEFAULT '[]'::jsonb,
+                  feedback_vote TEXT,
                   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 );
 
@@ -426,6 +453,12 @@ class PostgresAssistantStore:
                 CREATE INDEX IF NOT EXISTS idx_chunks_embedding_dimension ON knowledge_chunks(embedding_dimension);
                 CREATE INDEX IF NOT EXISTS idx_documents_space_id ON knowledge_documents(space_id);
                 CREATE INDEX IF NOT EXISTS idx_chats_session_id ON assistant_chats(session_id);
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE assistant_chat_messages
+                ADD COLUMN IF NOT EXISTS feedback_vote TEXT;
                 """
             )
             cur.execute(
@@ -516,13 +549,14 @@ class PostgresAssistantStore:
         )
 
     def _row_to_message(self, row: dict[str, Any]) -> ChatMessage:
-        citations = [Citation(**item) for item in (row["citations"] or [])]
+        citations = [Citation(**item) for item in (row.get("citations") or [])]
         return ChatMessage(
             id=row["id"],
             role=row["role"],
             content=row["content"],
             grounded=row["grounded"],
             citations=citations,
+            feedback_vote=row.get("feedback_vote"),
             created_at=to_iso(row["created_at"]),
         )
 
@@ -760,11 +794,12 @@ class PostgresAssistantStore:
             system_prompt = f"{system_prompt}\n\n{rag_prompt}"
 
         conversation: list[dict[str, str]] = []
+        assistant_role = "model" if row["provider"] == "google" else "assistant"
         recent_history = history[-8:]
         for message in recent_history[:-1]:
             conversation.append(
                 {
-                    "role": "assistant" if message.role == "ASSISTANT" else "user",
+                    "role": assistant_role if message.role == "ASSISTANT" else "user",
                     "content": message.content,
                 }
             )
@@ -784,12 +819,15 @@ class PostgresAssistantStore:
             api_key=row["generation_api_key"],
             base_url=row["generation_base_url"] or self._default_ollama_base_url,
         )
-        return provider.generate(
+        reply = provider.generate(
             system_prompt=system_prompt,
             messages=conversation,
             max_tokens=row["max_tokens"],
             temperature=float(row["temperature"]),
         )
+        if not reply.strip():
+            raise HTTPException(status_code=503, detail="Model returned no content.")
+        return reply
 
     def list_chats(self, session_id: str) -> list[Chat]:
         self._ensure_session(session_id)
@@ -843,7 +881,7 @@ class PostgresAssistantStore:
         with self._connect() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT id, role, content, grounded, citations, created_at
+                SELECT id, role, content, grounded, citations, feedback_vote, created_at
                 FROM assistant_chat_messages
                 WHERE chat_id = %s
                 ORDER BY created_at ASC;
@@ -1155,14 +1193,14 @@ class PostgresAssistantStore:
                 """
                 INSERT INTO assistant_chat_messages (id, chat_id, role, content, grounded, citations)
                 VALUES (%s, %s, 'USER', %s, FALSE, '[]'::jsonb)
-                RETURNING id, role, content, grounded, citations, created_at;
+                RETURNING id, role, content, grounded, citations, feedback_vote, created_at;
                 """,
                 (str(uuid4()), chat_id, content),
             )
-            cur.execute("UPDATE assistant_chats SET updated_at = now() WHERE id = %s;", (chat_id,))
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=500, detail="Failed to store user message.")
+            cur.execute("UPDATE assistant_chats SET updated_at = now() WHERE id = %s;", (chat_id,))
             return self._row_to_message(row)
 
     def append_assistant_message(self, session_id: str, chat_id: str, content: str) -> ChatMessage:
@@ -1178,7 +1216,7 @@ class PostgresAssistantStore:
                 """
                 INSERT INTO assistant_chat_messages (id, chat_id, role, content, grounded, citations)
                 VALUES (%s, %s, 'ASSISTANT', %s, %s, %s)
-                RETURNING id, role, content, grounded, citations, created_at;
+                RETURNING id, role, content, grounded, citations, feedback_vote, created_at;
                 """,
                 (
                     str(uuid4()),
@@ -1188,10 +1226,10 @@ class PostgresAssistantStore:
                     Json([citation.model_dump() for citation in citations]),
                 ),
             )
-            cur.execute("UPDATE assistant_chats SET updated_at = now() WHERE id = %s;", (chat_id,))
             row = cur.fetchone()
             if row is None:
                 raise HTTPException(status_code=500, detail="Failed to store assistant message.")
+            cur.execute("UPDATE assistant_chats SET updated_at = now() WHERE id = %s;", (chat_id,))
             return self._row_to_message(row)
 
     def regenerate(self, session_id: str, chat_id: str) -> ChatMessage:
@@ -1201,8 +1239,38 @@ class PostgresAssistantStore:
             raise HTTPException(status_code=400, detail="No user message to regenerate from.")
         return self.append_assistant_message(session_id, chat_id, last_user.content)
 
+    def set_message_feedback(self, session_id: str, message_id: str, vote: Optional[FeedbackVote]) -> ChatMessage:
+        with self._connect() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                UPDATE assistant_chat_messages AS m
+                SET feedback_vote = %s
+                FROM assistant_chats AS c
+                WHERE m.chat_id = c.id
+                  AND m.id = %s
+                  AND c.session_id = %s
+                  AND c.deleted_at IS NULL
+                  AND m.role = 'ASSISTANT'
+                RETURNING m.id, m.role, m.content, m.grounded, m.citations, m.feedback_vote, m.created_at;
+                """,
+                (vote, message_id, session_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Message not found.")
+            return self._row_to_message(row)
+
     def get_ollama_models(self, base_url: Optional[str] = None) -> list[dict[str, Any]]:
         return list_ollama_models(base_url or self._default_ollama_base_url)
+
+    def get_ollama_health(self, base_url: Optional[str] = None) -> dict[str, Any]:
+        return check_ollama_health(base_url or self._default_ollama_base_url)
+
+    def pull_ollama_model(self, model: str, base_url: Optional[str] = None):
+        target = model.strip()
+        if not target:
+            raise HTTPException(status_code=400, detail="Model is required.")
+        return pull_ollama_model(base_url or self._default_ollama_base_url, target)
 
 
 def build_store() -> MemoryAssistantStore | PostgresAssistantStore:

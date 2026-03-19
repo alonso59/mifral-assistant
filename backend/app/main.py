@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Generator
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
@@ -84,6 +84,14 @@ class UpdateSystemSettingsRequest(BaseModel):
     theme: str
 
 
+class OllamaPullRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=255)
+
+
+class MessageFeedbackRequest(BaseModel):
+    vote: Optional[Literal["LIKE", "DISLIKE"]] = None
+
+
 app = FastAPI(title="Assistant Backend", version="0.1.0")
 
 
@@ -110,6 +118,16 @@ def get_messages(chat_id: str, x_session_id: Optional[str] = Header(default=None
     return success([msg.model_dump() for msg in store.list_messages(session_id, chat_id)])
 
 
+@app.post("/api/v1/chat/messages/{message_id}/feedback")
+def submit_message_feedback(
+    message_id: str,
+    body: MessageFeedbackRequest,
+    x_session_id: Optional[str] = Header(default=None),
+) -> dict:
+    session_id = require_session_id(x_session_id)
+    return success(store.set_message_feedback(session_id, message_id, body.vote).model_dump())
+
+
 @app.patch("/api/v1/chats/{chat_id}")
 def rename_chat(chat_id: str, body: RenameChatRequest, x_session_id: Optional[str] = Header(default=None)) -> dict:
     session_id = require_session_id(x_session_id)
@@ -124,13 +142,19 @@ def delete_chat(chat_id: str, x_session_id: Optional[str] = Header(default=None)
 
 
 def _stream_reply(session_id: str, chat_id: str, message: str) -> Generator[str, None, None]:
-    user_message = store.append_user_message(session_id, chat_id, message)
-    assistant_message = store.append_assistant_message(session_id, chat_id, message)
     yield sse({"type": "start", "chat_id": chat_id})
-    yield sse({"type": "message", "message": user_message.model_dump()})
-    yield sse({"type": "message", "message": assistant_message.model_dump()})
-    if assistant_message.citations:
-        yield sse({"type": "sources", "items": [citation.model_dump() for citation in assistant_message.citations]})
+    try:
+        user_message = store.append_user_message(session_id, chat_id, message)
+        assistant_message = store.append_assistant_message(session_id, chat_id, message)
+        yield sse({"type": "message", "message": user_message.model_dump()})
+        yield sse({"type": "message", "message": assistant_message.model_dump()})
+        if assistant_message.citations:
+            yield sse({"type": "sources", "items": [citation.model_dump() for citation in assistant_message.citations]})
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Message generation failed."
+        yield sse({"type": "error", "message": detail})
+    except Exception as exc:
+        yield sse({"type": "error", "message": str(exc)})
     yield sse({"type": "done"})
 
 
@@ -149,11 +173,17 @@ def regenerate(chat_id: str, x_session_id: Optional[str] = Header(default=None))
     session_id = require_session_id(x_session_id)
 
     def generator() -> Generator[str, None, None]:
-        message = store.regenerate(session_id, chat_id)
         yield sse({"type": "start", "chat_id": chat_id})
-        yield sse({"type": "message", "message": message.model_dump()})
-        if message.citations:
-            yield sse({"type": "sources", "items": [citation.model_dump() for citation in message.citations]})
+        try:
+            message = store.regenerate(session_id, chat_id)
+            yield sse({"type": "message", "message": message.model_dump()})
+            if message.citations:
+                yield sse({"type": "sources", "items": [citation.model_dump() for citation in message.citations]})
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "Message generation failed."
+            yield sse({"type": "error", "message": detail})
+        except Exception as exc:
+            yield sse({"type": "error", "message": str(exc)})
         yield sse({"type": "done"})
 
     return StreamingResponse(generator(), media_type="text/event-stream")
@@ -260,6 +290,28 @@ def get_ollama_models(base_url: Optional[str] = Query(default=None)) -> dict:
         return success(store.get_ollama_models(base_url))
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {exc}") from exc
+
+
+@app.get("/api/v1/settings/model/ollama/health")
+def get_ollama_health(base_url: Optional[str] = Query(default=None)) -> dict:
+    try:
+        return success(store.get_ollama_health(base_url))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {exc}") from exc
+
+
+@app.post("/api/v1/settings/model/ollama/pull")
+def post_ollama_pull(body: OllamaPullRequest, base_url: Optional[str] = Query(default=None)) -> StreamingResponse:
+    try:
+        def generator() -> Generator[str, None, None]:
+            for line in store.pull_ollama_model(body.model, base_url):
+                yield f"data: {line}\n\n"
+
+        return StreamingResponse(generator(), media_type="text/event-stream")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Cannot pull Ollama model: {exc}") from exc
 
 
 @app.get("/api/v1/settings/knowledge")

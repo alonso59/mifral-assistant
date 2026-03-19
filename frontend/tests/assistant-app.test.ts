@@ -119,6 +119,14 @@ describe('AssistantApp', () => {
       if (url.startsWith('/api/v1/settings/model/ollama/models')) {
         return jsonResponse([{ name: 'llama3.2' }, { name: 'nomic-embed-text' }]);
       }
+      if (url.startsWith('/api/v1/settings/model/ollama/health')) {
+        return jsonResponse({ ok: true, model_count: 2 });
+      }
+      if (url.startsWith('/api/v1/settings/model/ollama/pull')) {
+        return new Response('data: {"status":"downloading","completed":1,"total":2}\n\ndata: {"status":"success","completed":2,"total":2}\n\n', {
+          headers: { 'Content-Type': 'text/event-stream' }
+        });
+      }
       if (url === '/api/v1/settings/knowledge') {
         return jsonResponse({
           chunk_size: 1000,
@@ -172,5 +180,23 @@ describe('AssistantApp', () => {
       '/api/v1/chats',
       expect.objectContaining({ method: 'POST' })
     );
+  });
+
+  it('checks Ollama health and pulls models from settings', async () => {
+    render(AssistantApp);
+
+    await waitFor(() => expect(screen.getByTitle('Settings')).toBeTruthy());
+    await fireEvent.click(screen.getByTitle('Settings'));
+
+    await waitFor(() => expect(screen.getByTitle('Check Ollama availability')).toBeTruthy());
+    await fireEvent.click(screen.getByTitle('Check Ollama availability'));
+    await waitFor(() => expect(screen.getByText(/Ollama reachable/i)).toBeTruthy());
+
+    await fireEvent.input(screen.getByPlaceholderText('Pull Ollama model…'), {
+      target: { value: 'mistral' }
+    });
+    await fireEvent.click(screen.getByTitle('Pull model'));
+
+    await waitFor(() => expect(screen.getByText('Done')).toBeTruthy());
   });
 });

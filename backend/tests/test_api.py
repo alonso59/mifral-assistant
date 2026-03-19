@@ -96,6 +96,18 @@ def test_settings_roundtrip_and_chat_isolated_by_session() -> None:
     assert ollama_models.status_code == 200
     assert len(ollama_models.json()["data"]) >= 1
 
+    ollama_health = client.get("/api/v1/settings/model/ollama/health")
+    assert ollama_health.status_code == 200
+    assert ollama_health.json()["data"]["ok"] is True
+
+    ollama_pull = client.post(
+        "/api/v1/settings/model/ollama/pull",
+        json={"model": "llama3.2"},
+    )
+    assert ollama_pull.status_code == 200
+    assert ollama_pull.headers["content-type"].startswith("text/event-stream")
+    assert '"status": "success"' in ollama_pull.text
+
     knowledge = client.put(
         "/api/v1/settings/knowledge",
         json={

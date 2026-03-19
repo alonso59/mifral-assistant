@@ -14,18 +14,22 @@
     Settings,
     Sparkles,
     Square,
+    ThumbsDown,
+    ThumbsUp,
     Trash2,
     Upload
   } from 'lucide-svelte';
   import { api, parseSseMessages } from '$lib/api';
   import CitationDisclosure from '$lib/components/classroom/CitationDisclosure.svelte';
   import SettingsOverlay from '$lib/components/SettingsOverlay.svelte';
+  import { getSessionId } from '$lib/session';
   import type {
     Chat,
     ChatMessage,
     KnowledgeSettings,
     KnowledgeSpace,
     ModelSettings,
+    OllamaHealth,
     OllamaModel,
     SystemSettings,
     UpdateModelSettings
@@ -53,6 +57,14 @@
   let ollamaModels: OllamaModel[] = [];
   let loadingOllamaModels = false;
   let ollamaModelsError: string | null = null;
+  let checkingOllamaHealth = false;
+  let ollamaHealth: OllamaHealth | null = null;
+  let ollamaHealthError: string | null = null;
+  let pullingOllamaModel = false;
+  let ollamaPullStatus = '';
+  let ollamaPullProgress: number | null = null;
+  let ollamaPullError: string | null = null;
+  let ollamaPullDone = false;
   let preferredTheme: 'light' | 'dark' = 'light';
 
   let modelSettings: ModelSettings = {
@@ -160,6 +172,102 @@
       }
     } finally {
       loadingOllamaModels = false;
+    }
+  }
+
+  async function checkOllamaHealth(purpose: 'generation' | 'embedding', baseUrl?: string | null) {
+    checkingOllamaHealth = true;
+    ollamaHealthError = null;
+    try {
+      const query = baseUrl ? `?base_url=${encodeURIComponent(baseUrl)}` : '';
+      ollamaHealth = await api.get<OllamaHealth>(`/api/v1/settings/model/ollama/health${query}`);
+      if (purpose === 'generation' || purpose === 'embedding') {
+        await refreshOllamaModels(purpose, baseUrl);
+      }
+    } catch (error) {
+      ollamaHealth = null;
+      ollamaHealthError = error instanceof Error ? error.message : 'Cannot reach Ollama.';
+    } finally {
+      checkingOllamaHealth = false;
+    }
+  }
+
+  async function pullOllamaModel(model: string, purpose: 'generation' | 'embedding', baseUrl?: string | null) {
+    const target = model.trim().replace(/^ollama\s+(run|pull)\s+/, '');
+    if (!target) return;
+
+    pullingOllamaModel = true;
+    ollamaPullStatus = '';
+    ollamaPullProgress = null;
+    ollamaPullError = null;
+    ollamaPullDone = false;
+
+    try {
+      const query = baseUrl ? `?base_url=${encodeURIComponent(baseUrl)}` : '';
+      const response = await fetch(`/api/v1/settings/model/ollama/pull${query}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Session-Id': getSessionId()
+        },
+        body: JSON.stringify({ model: target })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('Pull stream unavailable.');
+      }
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split('\n\n');
+        buffer = parts.pop() ?? '';
+
+        for (const rawEvent of parts) {
+          for (const event of parseSseMessages(`${rawEvent}\n\n`)) {
+            if (typeof event.error === 'string') {
+              throw new Error(event.error);
+            }
+            if (typeof event.status === 'string') {
+              ollamaPullStatus = event.status;
+            }
+            if (typeof event.completed === 'number' && typeof event.total === 'number' && event.total > 0) {
+              ollamaPullProgress = Math.round((event.completed / event.total) * 1000) / 10;
+            } else if (event.status === 'success') {
+              ollamaPullProgress = 100;
+            }
+          }
+        }
+      }
+
+      if (buffer.trim()) {
+        for (const event of parseSseMessages(`${buffer}\n\n`)) {
+          if (typeof event.status === 'string') {
+            ollamaPullStatus = event.status;
+          }
+          if (typeof event.completed === 'number' && typeof event.total === 'number' && event.total > 0) {
+            ollamaPullProgress = Math.round((event.completed / event.total) * 1000) / 10;
+          }
+        }
+      }
+
+      ollamaPullDone = true;
+      await refreshOllamaModels(purpose, baseUrl);
+      await checkOllamaHealth(purpose, baseUrl);
+    } catch (error) {
+      ollamaPullError = error instanceof Error ? error.message : 'Pull failed.';
+    } finally {
+      pullingOllamaModel = false;
     }
   }
 
@@ -298,11 +406,18 @@
         message: submitted
       });
       const events = parseSseMessages(stream);
+      const streamError = events.find((event) => event.type === 'error');
+      if (streamError && typeof streamError.message === 'string') {
+        throw new Error(streamError.message);
+      }
       const eventMessages = events
         .filter((event) => event.type === 'message')
         .map((event) => event.message as ChatMessage);
       const serverUser = eventMessages.find((message) => message.role === 'USER');
       const serverAssistant = eventMessages.find((message) => message.role === 'ASSISTANT');
+      if (!serverAssistant) {
+        throw new Error('Model returned no content.');
+      }
       messages = messages.filter((message) => message.id !== tempUserId && message.id !== tempAssistantId);
       if (serverUser) messages = [...messages, serverUser];
       if (serverAssistant) messages = [...messages, serverAssistant];
@@ -333,10 +448,17 @@
     try {
       const stream = await api.post<string>(`/api/v1/chats/${activeChat.id}/regenerate`);
       const events = parseSseMessages(stream);
+      const streamError = events.find((event) => event.type === 'error');
+      if (streamError && typeof streamError.message === 'string') {
+        throw new Error(streamError.message);
+      }
       const regenerated = events
         .filter((event) => event.type === 'message')
         .map((event) => event.message as ChatMessage)
         .find((message) => message.role === 'ASSISTANT');
+      if (!regenerated) {
+        throw new Error('Model returned no content.');
+      }
       if (regenerated) {
         messages = messages.map((message) =>
           message.id === lastAssistant.id ? regenerated : message
@@ -405,6 +527,47 @@
       'Selected knowledge'
     );
   }
+
+  async function submitFeedback(messageId: string, vote: 'LIKE' | 'DISLIKE') {
+    const current = messages.find((message) => message.id === messageId)?.feedback_vote ?? null;
+    const nextVote = current === vote ? null : vote;
+
+    messages = messages.map((message) =>
+      message.id === messageId ? { ...message, feedback_vote: nextVote } : message
+    );
+
+    try {
+      const updated = await api.post<ChatMessage>(`/api/v1/chat/messages/${messageId}/feedback`, {
+        vote: nextVote
+      });
+      messages = messages.map((message) => (message.id === messageId ? updated : message));
+    } catch {
+      messages = messages.map((message) =>
+        message.id === messageId ? { ...message, feedback_vote: current } : message
+      );
+    }
+  }
+
+  function generationStatusTone(): 'green' | 'yellow' | 'red' {
+    if (modelSettings.generation.provider !== 'ollama') return 'green';
+    if (ollamaHealthError || ollamaModelsError || ollamaPullError) return 'red';
+    if (pullingOllamaModel || checkingOllamaHealth || loadingOllamaModels) return 'yellow';
+    if (ollamaHealth && !ollamaHealth.ok) return 'red';
+    if (ollamaModels.length === 0) return 'yellow';
+    return ollamaModels.some((model) => model.name === modelSettings.generation.model) ? 'green' : 'yellow';
+  }
+
+  function generationStatusLabel(): string {
+    if (modelSettings.generation.provider !== 'ollama') return 'Ready';
+    if (ollamaHealthError || ollamaModelsError || ollamaPullError) return 'Unavailable';
+    if (pullingOllamaModel) return 'Pulling';
+    if (checkingOllamaHealth || loadingOllamaModels) return 'Checking';
+    if (ollamaHealth && !ollamaHealth.ok) return 'Not ready';
+    if (ollamaModels.length === 0) return 'No models';
+    return ollamaModels.some((model) => model.name === modelSettings.generation.model)
+      ? 'Available'
+      : 'Missing';
+  }
 </script>
 
 <svelte:head>
@@ -420,11 +583,21 @@
     {ollamaModels}
     {loadingOllamaModels}
     {ollamaModelsError}
+    {checkingOllamaHealth}
+    {ollamaHealth}
+    {ollamaHealthError}
+    {pullingOllamaModel}
+    {ollamaPullStatus}
+    {ollamaPullProgress}
+    {ollamaPullError}
+    {ollamaPullDone}
     onClose={() => (settingsOpen = false)}
     onSaveModel={saveModelSettings}
     onSaveKnowledge={saveKnowledgeSettings}
     onSaveSystem={saveSystemSettings}
     onRefreshOllamaModels={refreshOllamaModels}
+    onCheckOllamaHealth={checkOllamaHealth}
+    onPullOllamaModel={pullOllamaModel}
   />
 
   {#if loading}
@@ -636,7 +809,21 @@
         </div>
 
         <div class="mt-4 rounded-xl bg-black/[0.03] px-3 py-2.5 text-[11px] text-black/35">
-          Active model: <span class="font-mono">{modelSettings.generation.model}</span>
+          <div class="flex items-center gap-2">
+            <span
+              class={`h-1.5 w-1.5 rounded-full ${
+                generationStatusTone() === 'green'
+                  ? 'bg-green-500'
+                  : generationStatusTone() === 'yellow'
+                    ? 'bg-amber-400'
+                    : 'bg-red-500'
+              }`}
+            ></span>
+            <p class="truncate">
+              {generationStatusLabel()}:
+              <span class="font-mono">{modelSettings.generation.model}</span>
+            </p>
+          </div>
         </div>
       </aside>
 
@@ -737,6 +924,26 @@
                             {:else}
                               <Copy class="h-3 w-3" strokeWidth={2} />
                             {/if}
+                          </button>
+                          <button
+                            type="button"
+                            class={`rounded-md p-1 transition-colors hover:bg-black/[0.04] ${
+                              message.feedback_vote === 'LIKE' ? 'text-green-500' : 'text-black/35 hover:text-black/55'
+                            }`}
+                            title="Like"
+                            on:click={() => submitFeedback(message.id, 'LIKE')}
+                          >
+                            <ThumbsUp class="h-3 w-3" strokeWidth={2} />
+                          </button>
+                          <button
+                            type="button"
+                            class={`rounded-md p-1 transition-colors hover:bg-black/[0.04] ${
+                              message.feedback_vote === 'DISLIKE' ? 'text-red-400' : 'text-black/35 hover:text-black/55'
+                            }`}
+                            title="Dislike"
+                            on:click={() => submitFeedback(message.id, 'DISLIKE')}
+                          >
+                            <ThumbsDown class="h-3 w-3" strokeWidth={2} />
                           </button>
                           {#if messages[messages.length - 1]?.id === message.id}
                             <button

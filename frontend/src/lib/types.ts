@@ -24,6 +24,7 @@ export interface ChatMessage {
   content: string;
   grounded: boolean;
   citations: Citation[];
+  feedback_vote?: 'LIKE' | 'DISLIKE' | null;
   created_at: string;
 }
 
@@ -118,4 +119,9 @@ export interface OllamaModel {
   name: string;
   size?: number;
   modified_at?: string;
+}
+
+export interface OllamaHealth {
+  ok: boolean;
+  model_count: number;
 }

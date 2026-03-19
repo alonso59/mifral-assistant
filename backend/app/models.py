@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 
 Role = Literal["USER", "ASSISTANT"]
+FeedbackVote = Literal["LIKE", "DISLIKE"]
 ProcessingStatus = Literal["PROCESSING", "READY", "FAILED"]
 GenerationProvider = Literal["anthropic", "openai", "google", "ollama"]
 EmbeddingProvider = Literal["sentence-transformers", "openai", "google", "ollama"]
@@ -25,6 +26,7 @@ class ChatMessage(BaseModel):
     content: str
     grounded: bool = False
     citations: list[Citation] = Field(default_factory=list)
+    feedback_vote: Optional[FeedbackVote] = None
     created_at: str
 
 

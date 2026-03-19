@@ -31,7 +31,7 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
       OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL}
       OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL}
       APP_ENV: ${APP_ENV}
@@ -55,6 +55,7 @@ services:
       dockerfile: frontend/Dockerfile
     environment:
       BACKEND_INTERNAL_URL: http://backend:8100
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
     ports:
       - "${FRONTEND_PORT}:4173"
     depends_on:

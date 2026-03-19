@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 
 from app.models import GenerationProvider
 
@@ -179,7 +180,26 @@ class OllamaGenerationProvider(BaseGenerationProvider):
             },
             timeout=120,
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            detail = None
+            try:
+                detail = exc.response.json().get("error")
+            except Exception:
+                detail = exc.response.text.strip() or None
+            if exc.response.status_code == 404 and detail:
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        "Ollama could not serve the selected model. "
+                        "Pull it from Settings first."
+                    ),
+                ) from exc
+            raise HTTPException(
+                status_code=503,
+                detail=f"Ollama generation failed: {detail or exc.response.reason_phrase}",
+            ) from exc
         data = response.json()
         return str(data.get("message", {}).get("content", "")).strip()
 
@@ -208,3 +228,27 @@ def list_ollama_models(base_url: str) -> list[dict[str, Any]]:
     response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=10)
     response.raise_for_status()
     return response.json().get("models", [])
+
+
+def check_ollama_health(base_url: str) -> dict[str, Any]:
+    response = httpx.get(f"{base_url.rstrip('/')}/api/tags", timeout=10)
+    response.raise_for_status()
+    payload = response.json()
+    return {
+        "ok": True,
+        "model_count": len(payload.get("models", [])),
+    }
+
+
+def pull_ollama_model(base_url: str, model: str):
+    with httpx.stream(
+        "POST",
+        f"{base_url.rstrip('/')}/api/pull",
+        json={"name": model, "stream": True},
+        timeout=None,
+    ) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line:
+                continue
+            yield line
