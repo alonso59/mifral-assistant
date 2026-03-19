@@ -1,0 +1,162 @@
+@import './lib/design/tokens.generated.css';
+@import 'tailwindcss';
+
+@keyframes typing-dot {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* Wire Tailwind's dark: variant to the data-theme attribute */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+:root {
+  color-scheme: light dark;
+  font-family: 'Inter', var(--font-family-sans);
+  --app-sidebar-width: 280px;
+  --chat-shell-max: clamp(42rem, 58vw, 52rem);
+  --chat-user-bubble-max: 42rem;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text-primary);
+  font-family: 'Inter', var(--font-family-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+/* Custom scrollbar */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.15);
+}
+
+/* ─── Dark mode: remap black-based Tailwind utilities to white-based ──────────
+   Every text-black/X, bg-black/X, border-black/X in the codebase uses
+   hardcoded black with opacity. In dark mode these must flip to white.
+   bg-white also flips to the panel surface token.
+   Light mode is untouched.                                                    */
+[data-theme='dark'] {
+  /* bg-white → surface token (general panels, inputs, cards) */
+  & .bg-white { background-color: var(--bg-surface) !important; }
+  /* Toggle knob exception: small rounded circles must stay visually light */
+  & .rounded-full.bg-white { background-color: rgb(210 210 215) !important; }
+  /* Translucent white overlays */
+  & .bg-white\/60 { background-color: rgb(255 255 255 / 0.08) !important; }
+
+  /* ── text-black/X ── */
+  & .text-black\/85 { color: rgb(255 255 255 / 0.85) !important; }
+  & .text-black\/80 { color: rgb(255 255 255 / 0.80) !important; }
+  & .text-black\/75 { color: rgb(255 255 255 / 0.75) !important; }
+  & .text-black\/70 { color: rgb(255 255 255 / 0.70) !important; }
+  & .text-black\/65 { color: rgb(255 255 255 / 0.65) !important; }
+  & .text-black\/60 { color: rgb(255 255 255 / 0.60) !important; }
+  & .text-black\/55 { color: rgb(255 255 255 / 0.55) !important; }
+  & .text-black\/50 { color: rgb(255 255 255 / 0.50) !important; }
+  & .text-black\/45 { color: rgb(255 255 255 / 0.45) !important; }
+  & .text-black\/40 { color: rgb(255 255 255 / 0.40) !important; }
+  & .text-black\/35 { color: rgb(255 255 255 / 0.35) !important; }
+  & .text-black\/30 { color: rgb(255 255 255 / 0.30) !important; }
+  & .text-black\/25 { color: rgb(255 255 255 / 0.25) !important; }
+  & .text-black\/20 { color: rgb(255 255 255 / 0.20) !important; }
+  & .text-black\/15 { color: rgb(255 255 255 / 0.15) !important; }
+
+  /* ── bg-black/X (overlays, hover states) ── */
+  & .bg-black\/40  { background-color: rgb(255 255 255 / 0.40) !important; }
+  & .bg-black\/30  { background-color: rgb(255 255 255 / 0.30) !important; }
+  & .bg-black\/20  { background-color: rgb(255 255 255 / 0.20) !important; }
+  & .bg-black\/15  { background-color: rgb(255 255 255 / 0.15) !important; }
+  & .bg-black\/\[0\.08\]   { background-color: rgb(255 255 255 / 0.08)   !important; }
+  & .bg-black\/\[0\.07\]   { background-color: rgb(255 255 255 / 0.07)   !important; }
+  & .bg-black\/\[0\.06\]   { background-color: rgb(255 255 255 / 0.06)   !important; }
+  & .bg-black\/\[0\.05\]   { background-color: rgb(255 255 255 / 0.05)   !important; }
+  & .bg-black\/\[0\.04\]   { background-color: rgb(255 255 255 / 0.04)   !important; }
+  & .bg-black\/\[0\.03\]   { background-color: rgb(255 255 255 / 0.03)   !important; }
+  & .bg-black\/\[0\.02\]   { background-color: rgb(255 255 255 / 0.02)   !important; }
+  & .bg-black\/\[0\.015\]  { background-color: rgb(255 255 255 / 0.015)  !important; }
+
+  /* ── border-black/X ── */
+  & .border-black\/20        { border-color: rgb(255 255 255 / 0.20) !important; }
+  & .border-black\/\[0\.08\] { border-color: rgb(255 255 255 / 0.08) !important; }
+  & .border-black\/\[0\.06\] { border-color: rgb(255 255 255 / 0.06) !important; }
+  & .border-black\/\[0\.05\] { border-color: rgb(255 255 255 / 0.05) !important; }
+  & .border-black\/\[0\.04\] { border-color: rgb(255 255 255 / 0.04) !important; }
+
+  /* ── hover: variants that use black ── */
+  & .hover\:bg-black\/\[0\.05\]:hover { background-color: rgb(255 255 255 / 0.05) !important; }
+  & .hover\:bg-black\/\[0\.04\]:hover { background-color: rgb(255 255 255 / 0.04) !important; }
+  & .hover\:bg-black\/\[0\.03\]:hover { background-color: rgb(255 255 255 / 0.03) !important; }
+  & .hover\:text-black\/65:hover { color: rgb(255 255 255 / 0.65) !important; }
+  & .hover\:text-black\/60:hover { color: rgb(255 255 255 / 0.60) !important; }
+  & .hover\:text-black\/55:hover { color: rgb(255 255 255 / 0.55) !important; }
+  & .hover\:text-black\/80:hover { color: rgb(255 255 255 / 0.80) !important; }
+  & .hover\:text-black\/70:hover { color: rgb(255 255 255 / 0.70) !important; }
+
+  /* ── placeholder variants ── */
+  & .placeholder\:text-black\/25::placeholder { color: rgb(255 255 255 / 0.25) !important; }
+  & .placeholder\:text-black\/30::placeholder { color: rgb(255 255 255 / 0.30) !important; }
+
+  /* ── focus variants ── */
+  & .focus\:border-black\/20:focus { border-color: rgb(255 255 255 / 0.20) !important; }
+
+  /* ── delete / destructive button states ── */
+  & .hover\:bg-red-50:hover    { background-color: rgba(255, 69, 58, 0.12) !important; }
+  & .active\:bg-red-100:active { background-color: rgba(255, 69, 58, 0.20) !important; }
+  & .hover\:text-red-500:hover { color: #FF453A !important; }
+  & .active\:text-red-600:active { color: #FF6961 !important; }
+
+  /* ── border-b-white on tab active state (erases bottom border) ── */
+  & .border-b-white { border-bottom-color: var(--bg-surface) !important; }
+
+  /* ── scrollbar in dark ── */
+  & .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+  }
+  & .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.20);
+  }
+}
+
+
+@media (max-width: 1280px) {
+  :root {
+    --chat-shell-max: clamp(40rem, 60vw, 48rem);
+  }
+}
+
+@media (max-width: 1024px) {
+  :root {
+    --app-sidebar-width: 264px;
+    --chat-shell-max: min(44rem, calc(100vw - var(--app-sidebar-width) - 3rem));
+    --chat-user-bubble-max: 38rem;
+  }
+}
