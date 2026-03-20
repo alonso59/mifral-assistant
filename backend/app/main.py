@@ -4,7 +4,7 @@ import json
 from collections.abc import Generator
 from typing import Literal, Optional
 
-from fastapi import FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -75,13 +75,17 @@ class UpdateKnowledgeSettingsRequest(BaseModel):
     chunk_overlap: int
     retrieval_top_k: int
     relevance_threshold: float
+    enable_markdown_chunking: bool = True
+    query_augmentation: bool = False
     hybrid_search_enabled: bool
+    hybrid_bm25_weight: float = 0.5
     rag_template: str
 
 
 class UpdateSystemSettingsRequest(BaseModel):
     app_name: str
     theme: str
+    show_thinking_overlay: bool = True
 
 
 class OllamaPullRequest(BaseModel):
@@ -145,11 +149,9 @@ def _stream_reply(session_id: str, chat_id: str, message: str) -> Generator[str,
     yield sse({"type": "start", "chat_id": chat_id})
     try:
         user_message = store.append_user_message(session_id, chat_id, message)
-        assistant_message = store.append_assistant_message(session_id, chat_id, message)
         yield sse({"type": "message", "message": user_message.model_dump()})
-        yield sse({"type": "message", "message": assistant_message.model_dump()})
-        if assistant_message.citations:
-            yield sse({"type": "sources", "items": [citation.model_dump() for citation in assistant_message.citations]})
+        for event in store.stream_assistant_reply(session_id, chat_id, message):
+            yield sse(event)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Message generation failed."
         yield sse({"type": "error", "message": detail})
@@ -175,10 +177,8 @@ def regenerate(chat_id: str, x_session_id: Optional[str] = Header(default=None))
     def generator() -> Generator[str, None, None]:
         yield sse({"type": "start", "chat_id": chat_id})
         try:
-            message = store.regenerate(session_id, chat_id)
-            yield sse({"type": "message", "message": message.model_dump()})
-            if message.citations:
-                yield sse({"type": "sources", "items": [citation.model_dump() for citation in message.citations]})
+            for event in store.stream_regenerated_reply(session_id, chat_id):
+                yield sse(event)
         except HTTPException as exc:
             detail = exc.detail if isinstance(exc.detail, str) else "Message generation failed."
             yield sse({"type": "error", "message": detail})
@@ -217,8 +217,19 @@ def delete_space(space_id: str) -> dict:
 
 
 @app.post("/api/v1/knowledge-spaces/{space_id}/documents", status_code=201)
-async def upload_document(space_id: str, file: UploadFile = File(...)) -> dict:
-    row = await store.add_document(space_id, file)
+async def upload_document(
+    space_id: str,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> dict:
+    raw = await file.read()
+    row = store.queue_document(
+        space_id,
+        filename=file.filename,
+        content_type=file.content_type,
+        raw=raw,
+    )
+    background_tasks.add_task(store.process_document, row.id)
     return success(row.model_dump())
 
 
@@ -288,6 +299,8 @@ def put_model_settings(body: UpdateModelSettingsRequest) -> dict:
 def get_ollama_models(base_url: Optional[str] = Query(default=None)) -> dict:
     try:
         return success(store.get_ollama_models(base_url))
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {exc}") from exc
 
@@ -296,8 +309,23 @@ def get_ollama_models(base_url: Optional[str] = Query(default=None)) -> dict:
 def get_ollama_health(base_url: Optional[str] = Query(default=None)) -> dict:
     try:
         return success(store.get_ollama_health(base_url))
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Cannot reach Ollama: {exc}") from exc
+
+
+@app.get("/api/v1/settings/model/openrouter/models")
+def get_openrouter_models(
+    base_url: Optional[str] = Query(default=None),
+    api_key: Optional[str] = Query(default=None),
+) -> dict:
+    try:
+        return success(store.get_openrouter_models(base_url=base_url, api_key=api_key))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Cannot reach OpenRouter: {exc}") from exc
 
 
 @app.post("/api/v1/settings/model/ollama/pull")

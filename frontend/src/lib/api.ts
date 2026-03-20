@@ -10,7 +10,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    throw await toRequestError(response);
   }
 
   if (response.headers.get('content-type')?.startsWith('text/event-stream')) {
@@ -19,6 +19,55 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
   const payload = await response.json();
   return payload.data as T;
+}
+
+async function stream(
+  path: string,
+  init: RequestInit,
+  onEvent: (event: Record<string, unknown>) => void
+): Promise<void> {
+  const headers = new Headers(init.headers);
+  headers.set('X-Session-Id', getSessionId());
+
+  const response = await fetch(path, {
+    ...init,
+    headers
+  });
+
+  if (!response.ok) {
+    throw await toRequestError(response);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('Stream unavailable.');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value, { stream: !done });
+
+    let boundary = buffer.indexOf('\n\n');
+    while (boundary !== -1) {
+      const rawEvent = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      for (const event of parseSseMessages(`${rawEvent}\n\n`)) {
+        onEvent(event);
+      }
+      boundary = buffer.indexOf('\n\n');
+    }
+
+    if (done) break;
+  }
+
+  if (buffer.trim()) {
+    for (const event of parseSseMessages(`${buffer}\n\n`)) {
+      onEvent(event);
+    }
+  }
 }
 
 export const api = {
@@ -52,8 +101,29 @@ export const api = {
       method: 'POST',
       body: form
     });
-  }
+  },
+  stream
 };
+
+async function toRequestError(response: Response): Promise<Error> {
+  const fallback = `Request failed: ${response.status}`;
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.includes('application/json')) {
+    return new Error(fallback);
+  }
+
+  try {
+    const payload = await response.json();
+    const detail = payload?.detail;
+    if (typeof detail === 'string' && detail.trim()) {
+      return new Error(detail);
+    }
+  } catch {
+    return new Error(fallback);
+  }
+
+  return new Error(fallback);
+}
 
 export function parseSseMessages(text: string): Array<Record<string, unknown>> {
   return text

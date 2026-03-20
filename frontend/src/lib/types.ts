@@ -1,4 +1,4 @@
-export type GenerationProvider = 'anthropic' | 'openai' | 'google' | 'ollama';
+export type GenerationProvider = 'anthropic' | 'openai' | 'google' | 'ollama' | 'openrouter';
 export type EmbeddingProvider = 'sentence-transformers' | 'openai' | 'google' | 'ollama';
 
 export interface Chat {
@@ -26,12 +26,19 @@ export interface ChatMessage {
   citations: Citation[];
   feedback_vote?: 'LIKE' | 'DISLIKE' | null;
   created_at: string;
+  thinking?: boolean;
+  thinkingText?: string;
+  thoughtsExpanded?: boolean;
+  streaming?: boolean;
 }
 
 export interface KnowledgeDocument {
   id: string;
   filename: string;
-  processing_status: 'PROCESSING' | 'READY' | 'FAILED';
+  processing_status: 'PENDING' | 'PROCESSING' | 'READY' | 'FAILED';
+  processing_stage: 'QUEUED' | 'EXTRACTING' | 'CHUNKING' | 'EMBEDDING' | 'FINALIZING' | 'READY' | 'FAILED';
+  processing_progress_percent: number;
+  processing_message: string | null;
   chunk_count: number;
   created_at: string;
 }
@@ -49,6 +56,12 @@ export interface ProviderOption {
   label: string;
   hint: string;
   default_model: string;
+}
+
+export interface ProviderModelOption {
+  id: string;
+  label: string;
+  supports_reasoning: boolean;
 }
 
 export interface GenerationSettings {
@@ -106,13 +119,17 @@ export interface KnowledgeSettings {
   chunk_overlap: number;
   retrieval_top_k: number;
   relevance_threshold: number;
+  enable_markdown_chunking: boolean;
+  query_augmentation: boolean;
   hybrid_search_enabled: boolean;
+  hybrid_bm25_weight: number;
   rag_template: string;
 }
 
 export interface SystemSettings {
   app_name: string;
   theme: 'light' | 'dark' | 'system';
+  show_thinking_overlay: boolean;
 }
 
 export interface OllamaModel {

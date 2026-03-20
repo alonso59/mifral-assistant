@@ -7,8 +7,9 @@ from pydantic import BaseModel, Field
 
 Role = Literal["USER", "ASSISTANT"]
 FeedbackVote = Literal["LIKE", "DISLIKE"]
-ProcessingStatus = Literal["PROCESSING", "READY", "FAILED"]
-GenerationProvider = Literal["anthropic", "openai", "google", "ollama"]
+ProcessingStatus = Literal["PENDING", "PROCESSING", "READY", "FAILED"]
+ProcessingStage = Literal["QUEUED", "EXTRACTING", "CHUNKING", "EMBEDDING", "FINALIZING", "READY", "FAILED"]
+GenerationProvider = Literal["anthropic", "openai", "google", "ollama", "openrouter"]
 EmbeddingProvider = Literal["sentence-transformers", "openai", "google", "ollama"]
 
 
@@ -51,6 +52,9 @@ class KnowledgeDocument(BaseModel):
     filename: str
     content_type: str
     processing_status: ProcessingStatus
+    processing_stage: ProcessingStage
+    processing_progress_percent: int = Field(default=0, ge=0, le=100)
+    processing_message: Optional[str] = None
     content: str
     chunk_count: int
     created_at: str
@@ -68,6 +72,12 @@ class ProviderOption(BaseModel):
     label: str
     hint: str
     default_model: str
+
+
+class ProviderModelOption(BaseModel):
+    id: str
+    label: str
+    supports_reasoning: bool = False
 
 
 GENERATION_PROVIDER_OPTIONS = [
@@ -94,6 +104,12 @@ GENERATION_PROVIDER_OPTIONS = [
         label="Ollama (local)",
         hint="e.g. llama3.2, mistral, phi3",
         default_model="llama3.2",
+    ),
+    ProviderOption(
+        id="openrouter",
+        label="OpenRouter",
+        hint="Browse OpenRouter catalog and use reasoning-capable models when available",
+        default_model="nvidia/nemotron-3-super-120b-a12b:free",
     ),
 ]
 
@@ -130,7 +146,7 @@ class GenerationSettings(BaseModel):
     provider: GenerationProvider = "ollama"
     model: str = "llama3.2"
     api_key_set: bool = False
-    base_url: Optional[str] = "http://ollama:11434"
+    base_url: Optional[str] = "http://localhost:11434"
     system_prompt: Optional[str] = "You are a helpful AI assistant."
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=1024, ge=64, le=32768)
@@ -139,10 +155,10 @@ class GenerationSettings(BaseModel):
 
 
 class EmbeddingSettings(BaseModel):
-    provider: EmbeddingProvider = "ollama"
-    model: str = "nomic-embed-text"
+    provider: EmbeddingProvider = "sentence-transformers"
+    model: str = "sentence-transformers/all-MiniLM-L6-v2"
     api_key_set: bool = False
-    base_url: Optional[str] = "http://ollama:11434"
+    base_url: Optional[str] = None
 
 
 class ModelSettings(BaseModel):
@@ -161,7 +177,10 @@ class KnowledgeSettings(BaseModel):
     chunk_overlap: int = 120
     retrieval_top_k: int = 5
     relevance_threshold: float = 0.0
+    enable_markdown_chunking: bool = True
+    query_augmentation: bool = False
     hybrid_search_enabled: bool = False
+    hybrid_bm25_weight: float = 0.5
     rag_template: str = (
         "Use the provided context when it is relevant. "
         "If the context is insufficient, answer honestly and say what is missing."
@@ -171,3 +190,4 @@ class KnowledgeSettings(BaseModel):
 class SystemSettings(BaseModel):
     app_name: str = "Assistant"
     theme: Literal["light", "dark", "system"] = "light"
+    show_thinking_overlay: bool = True

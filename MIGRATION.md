@@ -1,98 +1,91 @@
 # MIGRATION
 
-## Phase 0: Contract First
+## Phase 0: Contract Lock
 Objective:
-- create assistant-specific product and software contracts
+- redefine `Assistant/` as a standalone mirror of the classroom AI stack, not an extraction scaffold
 
 Reuse:
-- chat, retrieval, provider, and settings concepts from the classroom app
+- classroom chat/runtime behavior
+- classroom settings model for generation, embeddings, RAG, and system controls
+- classroom streaming semantics for reasoning, grounded state, citations, and completion
 
 Drop:
-- auth, roles, classroom structure, lesson binding, workspace shell
+- auth
+- roles
+- classroom wrapper, rail, and lesson navigation
 
 Validation gate:
-- docs exist and define the single-sidebar interaction model
+- `Assistant/docs` and `README.md` describe the standalone mirror and host-installed Ollama requirement
 
 Rollback point:
-- remove `Assistant/docs` only
+- revert `Assistant/docs`, `Assistant/README.md`, and this file
 
-## Phase 1: Isolate Runtime
+## Phase 1: Runtime Parity
 Objective:
-- extract reusable runtime concepts into assistant-safe modules
+- make backend chat, retrieval, reasoning, and persistence mirror the classroom pipeline in standalone form
 
 Reuse:
-- chat streaming pattern
-- retrieval flow
-- model and knowledge settings concepts
+- generation config resolution
+- optional query augmentation
+- embedding config resolution
+- single-space retrieval
+- grounded/general decision and source prompt injection
+- provider streaming and final metadata persistence
 
 Drop:
-- lesson and class authorization
-- draft/published gates
-- hidden prompt rules
+- classroom lesson/class fallback
+- role-aware settings restrictions
 
 Validation gate:
-- backend can boot independently
+- backend persists chats, messages, citations, feedback, settings, and knowledge-space selection
 
 Rollback point:
-- remove `Assistant/backend`
+- revert `Assistant/backend/app`
 
-## Phase 2: Backend Contract
+## Phase 2: External Ollama Topology
 Objective:
-- implement standalone assistant APIs for chats, knowledge, and settings
+- keep Ollama integration healthy while requiring Ollama to run on the host outside Docker
 
 Reuse:
-- request/response envelope shape
-- SSE streaming semantics
+- Ollama health, model list, and model pull utilities
 
 Drop:
-- classroom routes and payload dependencies
+- Docker-managed Ollama service
 
 Validation gate:
-- backend tests cover chat lifecycle, knowledge selection, and upload flow
+- compose stack boots without an Ollama container
+- stored config remains `http://localhost:11434`
+- backend rewrites localhost to `host.docker.internal` only when it runs inside Docker
 
 Rollback point:
-- revert `Assistant/backend/app` and tests
+- revert `Assistant/compose*.yaml`, `.env.example`, and Ollama runtime helpers
 
-## Phase 3: Frontend Shell
+## Phase 3: Frontend Shell Parity
 Objective:
-- build standalone SvelteKit shell with one single sidebar
+- mirror classroom chat behaviors in the standalone single-sidebar shell
 
 Reuse:
-- muted editorial visual language
-- overlay settings patterns
+- streaming transcript updates
+- grounded warning banner
+- citations disclosure
+- reasoning disclosure
+- regenerate, feedback, copy, empty/loading/error states
 
 Drop:
-- classroom routes
-- rail + workspace + right-panel shell
+- classroom wrapper, lesson layout, and auth-dependent affordances
 
 Validation gate:
-- frontend tests cover `New chat`, `New knowledge`, knowledge expand/collapse, and selection state
+- standalone UI supports chat lifecycle, knowledge selection, settings, and responsive narrow-width behavior
 
 Rollback point:
 - revert `Assistant/frontend`
 
-## Phase 4: Knowledge and RAG Cutover
+## Phase 4: Iterative Sync Ledger
 Objective:
-- replace lesson/material ownership with knowledge-space ownership
-
-Reuse:
-- chunking and retrieval configuration
-
-Drop:
-- lesson-bound retrieval
+- keep classroom-to-Assistant replication repeatable across separate repos
 
 Validation gate:
-- upload, chunk, retrieval, and citation flow work end to end
+- root `migrate-minimal.md` exists and tracks mirror status by area
 
 Rollback point:
-- disable knowledge selection and upload flow
-
-## Phase 5: Handoff
-Objective:
-- document structure, startup, and boundaries
-
-Validation gate:
-- `Assistant/README.md` matches the delivered scaffold
-
-Rollback point:
-- keep subtree but mark as experimental
+- remove `migrate-minimal.md`

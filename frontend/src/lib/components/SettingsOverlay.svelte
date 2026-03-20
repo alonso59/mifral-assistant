@@ -6,10 +6,12 @@
     OllamaHealth,
     ModelSettings,
     OllamaModel,
+    ProviderModelOption,
     ProviderOption,
     SystemSettings,
     UpdateModelSettings
   } from '$lib/types';
+  import { canonicalLocalOllamaBaseUrl } from '$lib/utils/providers';
 
   export let open = false;
   export let modelSettings: ModelSettings;
@@ -18,6 +20,9 @@
   export let ollamaModels: OllamaModel[] = [];
   export let loadingOllamaModels = false;
   export let ollamaModelsError: string | null = null;
+  export let openRouterModels: ProviderModelOption[] = [];
+  export let loadingOpenRouterModels = false;
+  export let openRouterModelsError: string | null = null;
   export let checkingOllamaHealth = false;
   export let ollamaHealth: OllamaHealth | null = null;
   export let ollamaHealthError: string | null = null;
@@ -27,10 +32,11 @@
   export let ollamaPullError: string | null = null;
   export let ollamaPullDone = false;
   export let onClose: () => void;
-  export let onSaveModel: (value: UpdateModelSettings) => Promise<void>;
+  export let onSaveModel: (value: UpdateModelSettings) => Promise<ModelSettings>;
   export let onSaveKnowledge: (value: KnowledgeSettings) => Promise<void>;
   export let onSaveSystem: (value: SystemSettings) => Promise<void>;
   export let onRefreshOllamaModels: (purpose: 'generation' | 'embedding', baseUrl?: string | null) => Promise<void>;
+  export let onRefreshOpenRouterModels: (baseUrl?: string | null, apiKey?: string | null) => Promise<void>;
   export let onCheckOllamaHealth: (purpose: 'generation' | 'embedding', baseUrl?: string | null) => Promise<void>;
   export let onPullOllamaModel: (model: string, purpose: 'generation' | 'embedding', baseUrl?: string | null) => Promise<void>;
 
@@ -58,7 +64,10 @@
         provider: source.generation.provider,
         model: source.generation.model,
         api_key: '',
-        base_url: source.generation.base_url,
+        base_url:
+          source.generation.provider === 'ollama'
+            ? canonicalLocalOllamaBaseUrl(source.generation.base_url)
+            : source.generation.base_url,
         system_prompt: source.generation.system_prompt,
         temperature: source.generation.temperature,
         max_tokens: source.generation.max_tokens,
@@ -69,7 +78,10 @@
         provider: source.embedding.provider,
         model: source.embedding.model,
         api_key: '',
-        base_url: source.embedding.base_url
+        base_url:
+          source.embedding.provider === 'ollama'
+            ? canonicalLocalOllamaBaseUrl(source.embedding.base_url)
+            : source.embedding.base_url
       }
     };
   }
@@ -91,6 +103,12 @@
 
   $: if (open && !wasOpen) {
     syncDrafts();
+    if (draftModel.generation.provider === 'ollama') {
+      void onRefreshOllamaModels('generation', draftModel.generation.base_url);
+    }
+    if (draftModel.generation.provider === 'openrouter') {
+      void onRefreshOpenRouterModels(draftModel.generation.base_url, null);
+    }
     wasOpen = true;
   }
 
@@ -108,12 +126,17 @@
       draftModel.generation.model = option.default_model;
     }
     draftModel.generation.base_url = draftModel.generation.provider === 'ollama'
-      ? draftModel.generation.base_url || 'http://ollama:11434'
-      : draftModel.generation.provider === 'openai'
-        ? draftModel.generation.base_url || 'https://api.openai.com/v1'
-        : null;
+      ? 'http://localhost:11434'
+      : draftModel.generation.provider === 'openrouter'
+        ? 'https://openrouter.ai/api/v1'
+        : draftModel.generation.provider === 'openai'
+          ? 'https://api.openai.com/v1'
+          : null;
     if (draftModel.generation.provider === 'ollama') {
       void onRefreshOllamaModels('generation', draftModel.generation.base_url);
+    }
+    if (draftModel.generation.provider === 'openrouter') {
+      void onRefreshOpenRouterModels(draftModel.generation.base_url, generationApiKey.trim() || null);
     }
   }
 
@@ -124,9 +147,9 @@
     }
     draftModel.embedding.base_url =
       draftModel.embedding.provider === 'ollama'
-        ? draftModel.embedding.base_url || 'http://ollama:11434'
+        ? 'http://localhost:11434'
         : draftModel.embedding.provider === 'openai'
-          ? draftModel.embedding.base_url || 'https://api.openai.com/v1'
+          ? 'https://api.openai.com/v1'
           : null;
     if (draftModel.embedding.provider === 'ollama') {
       void onRefreshOllamaModels('embedding', draftModel.embedding.base_url);
@@ -138,7 +161,7 @@
     modelSuccess = '';
     modelError = '';
     try {
-      await onSaveModel({
+      const savedModel = await onSaveModel({
         generation: {
           ...draftModel.generation,
           api_key: generationApiKey.trim() || null
@@ -148,6 +171,7 @@
           api_key: embeddingApiKey.trim() || null
         }
       });
+      draftModel = createModelDraft(savedModel);
       generationApiKey = '';
       embeddingApiKey = '';
       modelSuccess = 'Configuration saved and activated.';
@@ -194,12 +218,16 @@
 
   function ollamaBaseUrl(purpose: 'generation' | 'embedding'): string | null {
     return purpose === 'generation'
-      ? draftModel.generation.base_url ?? null
-      : draftModel.embedding.base_url ?? null;
+      ? canonicalLocalOllamaBaseUrl(draftModel.generation.base_url)
+      : canonicalLocalOllamaBaseUrl(draftModel.embedding.base_url);
   }
 
   function isEmbeddingApiKeyProvider(provider: EmbeddingProvider): boolean {
     return provider === 'openai' || provider === 'google';
+  }
+
+  function generationSupportsReasoning(modelId: string): boolean {
+    return openRouterModels.find((model) => model.id === modelId)?.supports_reasoning ?? false;
   }
 </script>
 
@@ -208,7 +236,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-50" role="dialog" aria-modal="true" tabindex="-1" on:click|self={onClose}>
     <div class="absolute inset-0 bg-[var(--bg-overlay)]"></div>
-    <div class="absolute inset-x-6 top-6 mx-auto max-w-[1120px] rounded-[var(--radius-2xl)] border border-[var(--border-default)] bg-[var(--bg-panel)] p-6 shadow-[var(--shadow-lg)]">
+    <div class="absolute inset-x-2 top-2 mx-auto max-h-[calc(100vh-1rem)] max-w-[1120px] overflow-hidden rounded-[var(--radius-2xl)] border border-[var(--border-default)] bg-[var(--bg-panel)] p-4 shadow-[var(--shadow-lg)] sm:inset-x-6 sm:top-6 sm:max-h-[calc(100vh-3rem)] sm:p-6">
       <div class="flex items-start justify-between gap-4 border-b border-black/[0.06] pb-5">
         <div class="flex items-center gap-3">
           <div class="flex h-10 w-10 items-center justify-center rounded-xl bg-black/[0.04]">
@@ -253,9 +281,10 @@
               <p class="mb-4 text-[11px] uppercase tracking-wide text-black/30">Generation model</p>
               <div class="max-w-md space-y-4">
                 <div>
-                  <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Provider</label>
+                  <label for="generation-provider" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Provider</label>
                   <div class="relative">
                     <select
+                      id="generation-provider"
                       bind:value={draftModel.generation.provider}
                       class="w-full appearance-none rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 pr-8 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
                       on:change={handleGenerationProviderChange}
@@ -271,11 +300,12 @@
                 </div>
 
                 <div>
-                  <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Model</label>
+                  <label for="generation-model" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Model</label>
                   {#if draftModel.generation.provider === 'ollama'}
                     <div class="flex items-center gap-2">
                       <div class="relative flex-1">
                         <select
+                          id="generation-model"
                           bind:value={draftModel.generation.model}
                           disabled={loadingOllamaModels}
                           class="w-full appearance-none rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 pr-8 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20 disabled:opacity-50"
@@ -335,8 +365,51 @@
                     <p class="mt-1 text-[11px] text-black/35">
                       {optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.hint}
                     </p>
+                  {:else if draftModel.generation.provider === 'openrouter'}
+                    <div class="flex items-center gap-2">
+                      <div class="relative flex-1">
+                        <select
+                          bind:value={draftModel.generation.model}
+                          disabled={loadingOpenRouterModels}
+                          class="w-full appearance-none rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 pr-8 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20 disabled:opacity-50"
+                        >
+                          {#if loadingOpenRouterModels}
+                            <option value="">Loading…</option>
+                          {:else if openRouterModels.length === 0}
+                            <option value={draftModel.generation.model || 'nvidia/nemotron-3-super-120b-a12b:free'}>
+                              {draftModel.generation.model || 'nvidia/nemotron-3-super-120b-a12b:free'}
+                            </option>
+                          {:else}
+                            {#each openRouterModels as model (model.id)}
+                              <option value={model.id}>
+                                {model.label}{model.supports_reasoning ? ' · Reasoning' : ''}
+                              </option>
+                            {/each}
+                          {/if}
+                        </select>
+                        <svg class="pointer-events-none absolute right-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-black/35" viewBox="0 0 16 16" fill="currentColor">
+                          <path d="M4.22 6.22a.75.75 0 0 1 1.06 0L8 8.94l2.72-2.72a.75.75 0 1 1 1.06 1.06l-3.25 3.25a.75.75 0 0 1-1.06 0L4.22 7.28a.75.75 0 0 1 0-1.06Z"/>
+                        </svg>
+                      </div>
+                      <button
+                        type="button"
+                        class="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] transition-colors hover:bg-black/[0.04] disabled:opacity-40"
+                        disabled={loadingOpenRouterModels}
+                        title="Refresh OpenRouter models"
+                        on:click={() => onRefreshOpenRouterModels(draftModel.generation.base_url, generationApiKey.trim() || null)}
+                      >
+                        <RefreshCcw class={`h-3.5 w-3.5 text-black/45 ${loadingOpenRouterModels ? 'animate-spin' : ''}`} strokeWidth={1.8} />
+                      </button>
+                    </div>
+                    <div class="mt-1 flex items-center gap-2 text-[11px] text-black/35">
+                      <span>{optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.hint}</span>
+                      {#if generationSupportsReasoning(draftModel.generation.model)}
+                        <span class="rounded-full bg-black/[0.05] px-2 py-0.5 text-[10px] text-black/55">Reasoning</span>
+                      {/if}
+                    </div>
                   {:else}
                     <input
+                      id="generation-model"
                       bind:value={draftModel.generation.model}
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
                       placeholder={optionFor(modelSettings.generation_provider_options, draftModel.generation.provider)?.default_model}
@@ -349,31 +422,38 @@
 
                 {#if draftModel.generation.provider === 'ollama'}
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Ollama URL</label>
+                    <label for="generation-base-url" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Ollama URL</label>
                     <input
+                      id="generation-base-url"
                       bind:value={draftModel.generation.base_url}
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
-                      placeholder="http://ollama:11434"
+                      placeholder="http://localhost:11434"
                     />
                   </div>
-                {:else if draftModel.generation.provider === 'openai'}
+                {:else if draftModel.generation.provider === 'openai' || draftModel.generation.provider === 'openrouter'}
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Base URL</label>
+                    <label for="generation-base-url" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Base URL</label>
                     <input
+                      id="generation-base-url"
                       bind:value={draftModel.generation.base_url}
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
-                      placeholder="https://api.openai.com/v1"
+                      placeholder={draftModel.generation.provider === 'openrouter' ? 'https://openrouter.ai/api/v1' : 'https://api.openai.com/v1'}
                     />
-                    <p class="mt-1 text-[11px] text-black/35">Use this for OpenAI cloud or a self-hosted OpenAI-compatible endpoint.</p>
+                    <p class="mt-1 text-[11px] text-black/35">
+                      {draftModel.generation.provider === 'openrouter'
+                        ? 'Override the OpenRouter API base only if you proxy it through another endpoint.'
+                        : 'Use this for OpenAI cloud or a self-hosted OpenAI-compatible endpoint.'}
+                    </p>
                   </div>
                 {/if}
 
                 {#if draftModel.generation.provider !== 'ollama'}
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
+                    <label for="generation-api-key" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
                       API key {#if modelSettings.generation.provider === draftModel.generation.provider && modelSettings.generation.api_key_set}(leave blank to keep existing){/if}
                     </label>
                     <input
+                      id="generation-api-key"
                       bind:value={generationApiKey}
                       type="password"
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
@@ -382,11 +462,16 @@
                   </div>
                 {/if}
 
+                {#if draftModel.generation.provider === 'openrouter' && openRouterModelsError}
+                  <p class="text-[12px] text-[var(--status-error)]">{openRouterModelsError}</p>
+                {/if}
+
                 <div>
-                  <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
+                  <label for="generation-system-prompt" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
                     System prompt <span class="font-normal text-black/30">(global default)</span>
                   </label>
                   <textarea
+                    id="generation-system-prompt"
                     bind:value={draftModel.generation.system_prompt}
                     rows="3"
                     class="w-full resize-y rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[12.5px] text-black/65 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
@@ -396,10 +481,11 @@
 
                 <div>
                   <div class="mb-1.5 flex items-center justify-between">
-                    <label class="text-[12px] text-black/55" style="font-weight: 500;">Temperature <span class="font-normal text-black/30">(0–2)</span></label>
+                    <label for="generation-temperature" class="text-[12px] text-black/55" style="font-weight: 500;">Temperature <span class="font-normal text-black/30">(0–2)</span></label>
                     <span class="text-[12px] text-black/55 tabular-nums" style="font-weight: 500;">{draftModel.generation.temperature.toFixed(2)}</span>
                   </div>
                   <input
+                    id="generation-temperature"
                     bind:value={draftModel.generation.temperature}
                     type="range"
                     min="0"
@@ -416,16 +502,18 @@
 
                 <div class="grid grid-cols-2 gap-3">
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Max tokens</label>
+                    <label for="generation-max-tokens" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Max tokens</label>
                     <input
+                      id="generation-max-tokens"
                       bind:value={draftModel.generation.max_tokens}
                       type="number"
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
                     />
                   </div>
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Context tokens</label>
+                    <label for="generation-context-max-tokens" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Context tokens</label>
                     <input
+                      id="generation-context-max-tokens"
                       bind:value={draftModel.generation.context_max_tokens}
                       type="number"
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
@@ -438,6 +526,7 @@
                     type="button"
                     role="switch"
                     aria-checked={draftModel.generation.auto_compress}
+                    aria-label="Toggle auto-compress context"
                     class={`relative h-5 w-9 rounded-full transition-colors ${draftModel.generation.auto_compress ? 'bg-[var(--accent-primary)]' : 'bg-black/15'}`}
                     on:click={() => (draftModel.generation.auto_compress = !draftModel.generation.auto_compress)}
                   >
@@ -488,9 +577,10 @@
               <p class="mb-4 text-[12px] text-black/40">Used to encode documents and queries for RAG retrieval.</p>
               <div class="max-w-md space-y-4">
                 <div>
-                  <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Provider</label>
+                  <label for="embedding-provider" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Provider</label>
                   <div class="relative">
                     <select
+                      id="embedding-provider"
                       bind:value={draftModel.embedding.provider}
                       class="w-full appearance-none rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 pr-8 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
                       on:change={handleEmbeddingProviderChange}
@@ -512,9 +602,10 @@
                 {/if}
 
                 <div>
-                  <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Model</label>
+                  <label for="embedding-model" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Model</label>
                   <div class="flex items-center gap-2">
                     <input
+                      id="embedding-model"
                       bind:value={draftModel.embedding.model}
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
                       placeholder={optionFor(modelSettings.embedding_provider_options, draftModel.embedding.provider)?.default_model}
@@ -538,23 +629,25 @@
 
                 {#if draftModel.embedding.provider === 'openai' || draftModel.embedding.provider === 'ollama'}
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
+                    <label for="embedding-base-url" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
                       {draftModel.embedding.provider === 'ollama' ? 'Ollama URL' : 'Base URL'}
                     </label>
                     <input
+                      id="embedding-base-url"
                       bind:value={draftModel.embedding.base_url}
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
-                      placeholder={draftModel.embedding.provider === 'ollama' ? 'http://ollama:11434' : 'https://api.openai.com/v1'}
+                      placeholder={draftModel.embedding.provider === 'ollama' ? 'http://localhost:11434' : 'https://api.openai.com/v1'}
                     />
                   </div>
                 {/if}
 
                 {#if isEmbeddingApiKeyProvider(draftModel.embedding.provider)}
                   <div>
-                    <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
+                    <label for="embedding-api-key" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">
                       API key {#if modelSettings.embedding.provider === draftModel.embedding.provider && modelSettings.embedding.api_key_set}(leave blank to keep existing){/if}
                     </label>
                     <input
+                      id="embedding-api-key"
                       bind:value={embeddingApiKey}
                       type="password"
                       class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors placeholder:text-black/25 focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"
@@ -595,20 +688,54 @@
             <p class="text-[11px] uppercase tracking-wide text-black/30">Knowledge settings</p>
             <div class="grid grid-cols-2 gap-3">
               <div>
-                <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Chunk size</label>
-                <input bind:value={draftKnowledge.chunk_size} type="number" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+                <label for="knowledge-chunk-size" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Chunk size</label>
+                <input id="knowledge-chunk-size" bind:value={draftKnowledge.chunk_size} type="number" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
               </div>
               <div>
-                <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Chunk overlap</label>
-                <input bind:value={draftKnowledge.chunk_overlap} type="number" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+                <label for="knowledge-chunk-overlap" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Chunk overlap</label>
+                <input id="knowledge-chunk-overlap" bind:value={draftKnowledge.chunk_overlap} type="number" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
               </div>
               <div>
-                <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Top K</label>
-                <input bind:value={draftKnowledge.retrieval_top_k} type="number" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+                <label for="knowledge-top-k" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Top K</label>
+                <input id="knowledge-top-k" bind:value={draftKnowledge.retrieval_top_k} type="number" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
               </div>
               <div>
-                <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Threshold</label>
-                <input bind:value={draftKnowledge.relevance_threshold} type="number" step="0.05" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+                <label for="knowledge-threshold" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Threshold</label>
+                <input id="knowledge-threshold" bind:value={draftKnowledge.relevance_threshold} type="number" step="0.05" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+              </div>
+            </div>
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div class="flex items-center gap-3">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draftKnowledge.enable_markdown_chunking}
+                  aria-label="Toggle markdown-aware chunking"
+                  class={`relative h-5 w-9 rounded-full transition-colors ${draftKnowledge.enable_markdown_chunking ? 'bg-[var(--accent-primary)]' : 'bg-black/15'}`}
+                  on:click={() => (draftKnowledge.enable_markdown_chunking = !draftKnowledge.enable_markdown_chunking)}
+                >
+                  <span class={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${draftKnowledge.enable_markdown_chunking ? 'translate-x-4' : 'translate-x-0.5'}`}></span>
+                </button>
+                <div>
+                  <p class="text-[12.5px] text-black/65" style="font-weight: 500;">Markdown-aware chunking</p>
+                  <p class="text-[11px] text-black/35">Preserve heading structure when documents contain markdown sections.</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-3">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draftKnowledge.query_augmentation}
+                  aria-label="Toggle query augmentation"
+                  class={`relative h-5 w-9 rounded-full transition-colors ${draftKnowledge.query_augmentation ? 'bg-[var(--accent-primary)]' : 'bg-black/15'}`}
+                  on:click={() => (draftKnowledge.query_augmentation = !draftKnowledge.query_augmentation)}
+                >
+                  <span class={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${draftKnowledge.query_augmentation ? 'translate-x-4' : 'translate-x-0.5'}`}></span>
+                </button>
+                <div>
+                  <p class="text-[12.5px] text-black/65" style="font-weight: 500;">Query augmentation</p>
+                  <p class="text-[11px] text-black/35">Rephrase chat prompts into retrieval-oriented queries before embedding.</p>
+                </div>
               </div>
             </div>
             <div class="flex items-center gap-3">
@@ -616,6 +743,7 @@
                 type="button"
                 role="switch"
                 aria-checked={draftKnowledge.hybrid_search_enabled}
+                aria-label="Toggle hybrid search"
                 class={`relative h-5 w-9 rounded-full transition-colors ${draftKnowledge.hybrid_search_enabled ? 'bg-[var(--accent-primary)]' : 'bg-black/15'}`}
                 on:click={() => (draftKnowledge.hybrid_search_enabled = !draftKnowledge.hybrid_search_enabled)}
               >
@@ -627,8 +755,13 @@
               </div>
             </div>
             <div>
-              <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">RAG template</label>
-              <textarea bind:value={draftKnowledge.rag_template} rows="5" class="w-full resize-y rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[12.5px] text-black/65 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"></textarea>
+              <label for="knowledge-hybrid-weight" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Hybrid lexical weight</label>
+              <input id="knowledge-hybrid-weight" bind:value={draftKnowledge.hybrid_bm25_weight} type="number" step="0.05" min="0" max="1" class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+              <p class="mt-1 text-[11px] text-black/35">`0` keeps vector search dominant, `1` favors lexical ranking.</p>
+            </div>
+            <div>
+              <label for="knowledge-rag-template" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">RAG template</label>
+              <textarea id="knowledge-rag-template" bind:value={draftKnowledge.rag_template} rows="5" class="w-full resize-y rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[12.5px] text-black/65 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20"></textarea>
             </div>
             {#if knowledgeError}
               <p class="text-[12px] text-[var(--status-error)]">{knowledgeError}</p>
@@ -649,11 +782,11 @@
           <div class="max-w-[540px] space-y-4">
             <p class="text-[11px] uppercase tracking-wide text-black/30">System settings</p>
             <div>
-              <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">App name</label>
-              <input bind:value={draftSystem.app_name} class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
+              <label for="system-app-name" class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">App name</label>
+              <input id="system-app-name" bind:value={draftSystem.app_name} class="w-full rounded-[var(--radius-md)] border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-[13px] text-black/70 outline-none transition-colors focus:border-[var(--accent-primary)] focus:ring-1 focus:ring-[var(--accent-primary)]/20" />
             </div>
             <div>
-              <label class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Theme</label>
+              <p class="mb-1.5 block text-[12px] text-black/55" style="font-weight: 500;">Theme</p>
               <div class="flex items-center gap-2">
                 {#each ['light', 'dark', 'system'] as theme}
                   <button
@@ -665,6 +798,22 @@
                     {theme}
                   </button>
                 {/each}
+              </div>
+            </div>
+            <div class="flex items-center gap-3">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={draftSystem.show_thinking_overlay}
+                aria-label="Toggle reasoning thoughts display"
+                class={`relative h-5 w-9 rounded-full transition-colors ${draftSystem.show_thinking_overlay ? 'bg-[var(--accent-primary)]' : 'bg-black/15'}`}
+                on:click={() => (draftSystem.show_thinking_overlay = !draftSystem.show_thinking_overlay)}
+              >
+                <span class={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${draftSystem.show_thinking_overlay ? 'translate-x-4' : 'translate-x-0.5'}`}></span>
+              </button>
+              <div>
+                <p class="text-[12.5px] text-black/65" style="font-weight: 500;">Show thoughts during reasoning</p>
+                <p class="text-[11px] text-black/35">Displays a collapsible live summary only when the model explicitly reports reasoning.</p>
               </div>
             </div>
             {#if systemError}

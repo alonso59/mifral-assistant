@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from fastapi import HTTPException
 
+from app.generation import normalize_ollama_base_url
 from app.models import EmbeddingProvider
 
 
@@ -36,7 +37,7 @@ class OpenAICompatibleEmbeddingProvider(BaseEmbeddingProvider):
 
 class OllamaEmbeddingProvider(BaseEmbeddingProvider):
     def __init__(self, *, base_url: str | None, model_name: str) -> None:
-        self._base_url = (base_url or "http://ollama:11434").rstrip("/")
+        self._base_url = normalize_ollama_base_url(base_url)
         self._model_name = model_name
 
     def embed_one(self, text: str) -> list[float]:
